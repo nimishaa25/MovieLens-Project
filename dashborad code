@@ -1,0 +1,129 @@
+import pandas as pd
+import dash
+from dash import dcc, html, Input, Output
+import plotly.express as px
+import plotly.graph_objects as go
+
+# Load the MovieLens 1M dataset
+ratings = pd.read_csv(r"ratings.csv")  # Columns: userId, movieId, rating, timestamp
+movies = pd.read_csv(r"movies.csv")  # Columns: movieId, title, genres
+users = pd.read_csv(r"users.csv")  # Columns: userId, gender, age, occupation, zip
+
+# Preprocess data
+movies['year'] = movies['title'].str.extract(r'\((\d{4})\)').fillna(0).astype(int)
+movies['genres_list'] = movies['genres'].str.split('|')
+
+# Merge datasets
+data = ratings.merge(movies, on='movieId').merge(users, on='userId')
+
+# Helper function to explode genres for analysis
+data_exploded = data.explode('genres_list')
+
+# Initialize Dash app
+app = dash.Dash(__name__)
+
+app.layout = html.Div([
+    html.H1("MovieLens 1M Dashboard", style={'textAlign': 'center'}),
+
+    # Dropdown to select visualization type
+    html.Div([
+        html.Label("Select Visualization Type"),
+        dcc.Dropdown(
+            id='visualization-type',
+            options=[
+                {'label': 'Ratings Distribution by Genres and Years', 'value': 'dist_ratings'},
+                {'label': 'Popular Genres by User Demographics', 'value': 'pop_genres'},
+                {'label': 'Correlation Heatmaps', 'value': 'heatmaps'}
+            ],
+            value='dist_ratings',
+            clearable=False
+        )
+    ]),
+
+    # Visualization output
+    html.Div(id='visualization-output')
+])
+
+@app.callback(
+    Output('visualization-output', 'children'),
+    Input('visualization-type', 'value')
+)
+def update_visualization(viz_type):
+    if viz_type == 'dist_ratings':
+        # Ratings distribution by genres and years
+        genre_year = (
+            data_exploded.groupby(['genres_list', 'year'])
+            .rating.mean()
+            .reset_index()
+            .sort_values(by='year')
+        )
+        genre_year = genre_year[genre_year['year'] > 0]  # Filter invalid years
+        fig = px.line(
+            genre_year,
+            x='year',
+            y='rating',
+            color='genres_list',
+            title="Ratings Distribution by Genres and Years",
+            labels={'genres_list': 'Genre', 'year': 'Year', 'rating': 'Average Rating'}
+        )
+        fig.update_layout(
+            xaxis_title="Year",
+            yaxis_title="Average Rating",
+            legend_title="Genre",
+            margin=dict(l=50, r=50, t=50, b=50),
+        )
+        return dcc.Graph(figure=fig)
+
+    elif viz_type == 'pop_genres':
+        # Popular genres by user demographics
+        genre_gender = (
+            data_exploded.groupby(['genres_list', 'gender'])
+            .size()
+            .reset_index(name='count')
+        )
+        fig = px.bar(
+            genre_gender,
+            x='genres_list',
+            y='count',
+            color='gender',
+            title="Popular Genres by User Demographics",
+            labels={'genres_list': 'Genre', 'count': 'Count', 'gender': 'Gender'}
+        )
+        fig.update_layout(
+            xaxis_title="Genre",
+            yaxis_title="Count",
+            margin=dict(l=50, r=50, t=50, b=50),
+        )
+        return dcc.Graph(figure=fig)
+
+    elif viz_type == 'heatmaps':
+        # Prepare data for heatmap
+        genre_activity = (
+            data_exploded.groupby(['genres_list', 'userId'])
+            .rating.mean()
+            .unstack(fill_value=0)
+        )
+        genre_correlation = genre_activity.corr()
+
+        # Create heatmap using Plotly
+        fig = go.Figure(
+            data=go.Heatmap(
+                z=genre_correlation.values,
+                x=genre_correlation.columns,
+                y=genre_correlation.index,
+                colorscale="coolwarm",
+                colorbar=dict(title="Correlation"),
+            )
+        )
+        fig.update_layout(
+            title="Correlation Heatmap: Genres and Ratings by User Activity",
+            xaxis_title="Genres",
+            yaxis_title="Genres",
+            margin=dict(l=50, r=50, t=50, b=50),
+        )
+        return dcc.Graph(figure=fig)
+
+    return html.Div("No visualization available")
+
+if __name__ == '__main__':
+    app.run_server(debug=True)
